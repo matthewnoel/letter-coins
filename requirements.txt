@@ -1,0 +1,7 @@
+build123d==0.9.1
+# build123d 0.9.1 accepts ocpsvg>=0.7, which imports OCP.collections and fails
+# against the cadquery-ocp 7.8 that build123d pins. 0.5.0 works with OCP 7.8.
+ocpsvg==0.5.0
+# For preview.py's headless multi-view render. generate.py itself needs only
+# build123d; numpy arrives transitively via build123d.
+matplotlib==3.10.3

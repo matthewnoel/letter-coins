@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+*.stl
+preview*.png
+.claude/skills/
