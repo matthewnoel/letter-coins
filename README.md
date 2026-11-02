@@ -2,7 +2,7 @@
 
 Quarter-sized magnetic "claim" tokens for a magnetic whiteboard: a thick disc
 with an embossed **M** or **S** on top and a blind pocket in the back for a
-3/16" × 1/4" press-fit cylindrical magnet — plus a small test strip of graded
+press-fit cylindrical magnet (sold as 3/16" × 1/4") — plus a small test strip of graded
 pockets for dialling in the press fit first. A single-file `build123d` CLI
 that generates printable STLs. Scaffolded by Partwright.
 
@@ -10,10 +10,20 @@ that generates printable STLs. Scaffolded by Partwright.
 | --- | --- | --- |
 | `m` (default) | coin with an embossed "M" | 24.26 dia × 8.75 |
 | `s` | coin with an embossed "S" | 24.26 dia × 8.75 |
-| `magnet-test` | bar of 6 magnet pockets, clearance 0.30–1.05 mm | 49.58 × 9.26 × 7.75 |
+| `magnet-test` | bar of 6 magnet pockets, clearance 0.30–1.05 mm | 59.18 × 10.86 × 7.75 |
 
 Every STL is print-ready as exported: back face (pocket opening) down on the
 plate, no supports.
+
+### Magnet fit (as printed)
+
+The magnets are nominally 3/16" (4.76 mm) diameter × 1/4" (6.35 mm) long, but
+pockets sized from 4.76 mm were far too tight. A test strip showed a 6.5625 mm
+pocket gives a good press fit, so the default `--magnet-diameter` is the
+**effective** diameter 6.3625 mm, with the normal 0.10 mm per-side
+`--magnet-clearance` on top: pocket = 6.3625 + 2 × 0.10 = 6.5625 mm, 6.55 mm
+deep. The coins exported with the defaults are the ones that were printed and
+confirmed to work.
 
 ## Prerequisites
 
@@ -62,31 +72,34 @@ test-strip start/step/count):
 
 ### Dialling in the magnet fit (test strip workflow)
 
-1. Print the strip: `.venv/bin/python generate.py --component magnet-test`.
-   The build prints a table mapping each pocket to its clearance. Pocket 0 is
-   at the **rounded end** (tightest); clearance grows by 0.15 mm per pocket
-   toward the square end:
+Only needed for new magnets or a different printer/filament. Note that the
+strip's pockets are sized from `--magnet-diameter`, and the default clearance
+range (0.30–1.05 mm per side, in 0.15 mm steps) is still the wide range used to
+find the fit — with the corrected magnet diameter it is far too loose. Re-centre
+it around a normal press fit when re-testing:
 
-   | pocket | per-side clearance (mm) | pocket diameter (mm) |
-   | --- | --- | --- |
-   | 0 (rounded end) | 0.30 | 5.3625 |
-   | 1 | 0.45 | 5.6625 |
-   | 2 | 0.60 | 5.9625 |
-   | 3 | 0.75 | 6.2625 |
-   | 4 | 0.90 | 6.5625 |
-   | 5 (square end) | 1.05 | 6.8625 |
-
-2. Press a magnet into each pocket. Pick the tightest pocket where the magnet
-   seats fully and holds firmly.
-3. Export the coins with that clearance, e.g.:
+1. Print the strip, giving your best magnet diameter and a tight range, e.g.:
 
    ```sh
-   .venv/bin/python generate.py --magnet-clearance 0.15 --all
+   .venv/bin/python generate.py --component magnet-test \
+       --magnet-diameter 6.3625 --test-clearance-start 0.00 --test-clearance-step 0.10
    ```
 
-   (This also re-exports the strip; just print the coins.) Shift the strip's
-   range with `--test-clearance-start`, `--test-clearance-step` and
-   `--test-pocket-count` if none of the pockets fit well.
+   The build prints a table mapping each pocket to its clearance and diameter.
+   Pocket 0 is at the **rounded end** (tightest); pockets grow toward the
+   square end.
+2. Press a magnet into each pocket. Pick the tightest pocket where the magnet
+   seats fully and holds firmly. If none are close, widen the step rather than
+   guessing — but once you find the fit, fold a large miss into
+   `--magnet-diameter`, not into the clearance.
+3. Export the coins so that `magnet_diameter + 2 × magnet_clearance` equals the
+   winning pocket's diameter, e.g. with the 0.10 mm default clearance:
+
+   ```sh
+   .venv/bin/python generate.py --magnet-diameter <pocket diameter - 0.2> --all
+   ```
+
+   (This also re-exports the strip; just print the coins.)
 
 ## Visual preview
 
