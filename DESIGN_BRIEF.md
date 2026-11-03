@@ -6,7 +6,7 @@ small press-fit cylindrical magnet. Two coin variants — **M** (Matthew) and
 **S** (Samantha) — plus a low-filament **magnet test strip** of graded pockets
 used to dial in the magnet press fit before printing the coins. Each component
 is a single printed piece in a single filament. At default parameters a coin is
-≈ 24.26 mm diameter × 8.75 mm tall; the test strip is ≈ 49.6 × 9.3 × 7.75 mm.
+≈ 24.26 mm diameter × 8.75 mm tall; the test strip is ≈ 59.2 × 10.9 × 7.75 mm.
 
 - **Project name:** `letter-coins`
 - **Units:** mm (the magnet was measured in inches: 3/16" dia × 1/4" long,
@@ -44,6 +44,8 @@ live Python**, never as the pre-computed number — otherwise tuning
 | `coin_diameter` | 24.26 | mm | yes | coin outer diameter (US quarter) |
 | `letter_height` | 14.0 | mm | yes | height (Y extent) of the embossed glyph |
 | `letter_emboss` | 1.0 | mm | yes | how far the letter stands proud of the coin top face |
+| `letter` | (none) | char | yes | any single character to emboss; overrides the `m`/`s` preset (`--letter @`) |
+| `letter_margin` | 1.5 | mm | no | minimum gap between the glyph outline and the coin edge |
 | `pocket_diameter` | 6.5625 | mm | no | derived: `magnet_diameter + 2 * magnet_clearance` |
 | `pocket_depth` | 6.55 | mm | no | derived: `magnet_height + magnet_depth_clearance` |
 | `body_thickness` | 7.75 | mm | no | derived: `pocket_depth + pocket_roof` |
@@ -53,10 +55,10 @@ live Python**, never as the pre-computed number — otherwise tuning
 | `test_pocket_count` | 6 | count | yes | number of pockets on the test strip |
 | `test_wall` | 1.2 | mm | no | minimum wall around/between test-strip pockets |
 | `test_clearance_max` | 1.05 | mm | no | derived: `test_clearance_start + (test_pocket_count - 1) * test_clearance_step` |
-| `test_pocket_diameter_max` | 6.8625 | mm | no | derived: `magnet_diameter + 2 * test_clearance_max` |
-| `test_pitch` | 8.0625 | mm | no | derived: `test_pocket_diameter_max + test_wall` (center-to-center pocket spacing) |
-| `test_strip_width` | 9.2625 | mm | no | derived: `test_pocket_diameter_max + 2 * test_wall` (Y extent) |
-| `test_strip_length` | 49.575 | mm | no | derived: `test_pocket_count * test_pitch + test_wall` (X extent) |
+| `test_pocket_diameter_max` | 8.4625 | mm | no | derived: `magnet_diameter + 2 * test_clearance_max` |
+| `test_pitch` | 9.6625 | mm | no | derived: `test_pocket_diameter_max + test_wall` (center-to-center pocket spacing) |
+| `test_strip_width` | 10.8625 | mm | no | derived: `test_pocket_diameter_max + 2 * test_wall` (Y extent) |
+| `test_strip_length` | 59.175 | mm | no | derived: `test_pocket_count * test_pitch + test_wall` (X extent) |
 
 The test strip's height is `body_thickness` (same pocket depth and roof as the
 coins) — not a separate parameter.
@@ -142,7 +144,7 @@ Expected bounding boxes at default parameters:
 
 - `m`, `s`: X ≈ 24.26, Y ≈ 24.26, Z = 8.75 mm (letter extents in X/Y are well
   inside the disc).
-- `magnet-test`: X ≈ 49.58, Y ≈ 9.26, Z = 7.75 mm.
+- `magnet-test`: X ≈ 59.18, Y ≈ 10.86, Z = 7.75 mm.
 
 Checks: each component is a single watertight solid; coins have exactly one
 pocket, the strip has `test_pocket_count`; `preview.py` render shows the letter
@@ -161,12 +163,40 @@ this brief fully define it.
 
 - No multi-color / filament-swap features — single filament per coin.
 - No raised rim, no edge chamfer/fillet/knurl.
-- No letters other than M and S as components (no arbitrary-text flag needed),
-  no letter on the back.
+- Single character only — no multi-character strings or monograms, no letter
+  on the back. (Any single character *is* in scope; see §9.)
 - No glue channels, no snap-in magnet retention, no mid-print-pause magnet
   embedding.
 - No multi-coin print plate — one model per STL.
 - No labels/numbers on the test strip; the rounded end is the only marker.
+
+## 9. Arbitrary single-character coins (added after first ship)
+
+Requirement: the generator must build a coin for **any single character**, as the
+default font (Arial Bold) renders it — not only M and S. Acceptance: an `@` coin
+produced by the generalized path, not a special case.
+
+- `--letter CHAR` builds a coin embossed with `CHAR`. `m` and `s` stay as
+  named presets (`COIN_LETTERS`) and go through the **same** generalized
+  coin builder — there is one coin code path.
+- Input: exactly one Unicode code point, not whitespace. Reject anything else
+  with a clear error. If the font produces no usable glyph geometry (missing
+  glyph / zero area), fail loudly rather than export a blank coin.
+- Sizing: the glyph is scaled so its Y extent is `letter_height`, **then shrunk
+  if needed** so no point of its outline is farther than
+  `coin_diameter / 2 - letter_margin` from the coin center (wide or flat glyphs
+  like `@`, `W`, `_`, `-` would otherwise run off the disc). Report when a
+  glyph was shrunk. Glyph centered on its own bounding box, as for M/S.
+- Multi-island glyphs (`i`, `%`, `:`, `"`, `ä`) and glyphs with holes (`@`,
+  `O`, `8`) must still produce one watertight solid — every island sits on the
+  coin face.
+- Filename: `letter-coins-<slug>.stl`. Slug: uppercase ASCII letter → its
+  lowercase (`M` → `m`, matching the preset files); lowercase ASCII letter →
+  `lower-<letter>` (macOS is case-insensitive, so `m`/`M` must not collide);
+  ASCII digit → the digit; anything else → `unicodedata.name()` lowercased with
+  non-alphanumerics → `-` (`@` → `commercial-at`), falling back to `u<hex
+  codepoint>` if unnamed.
+- Bounding box for any character coin at defaults: 24.26 × 24.26 × 8.75 mm.
 
 ## 8. Open questions
 

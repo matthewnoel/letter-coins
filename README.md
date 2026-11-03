@@ -55,9 +55,22 @@ Pick a component, or export all three at once (`letter-coins-m.stl`,
 .venv/bin/python generate.py --all
 ```
 
+Make a coin for **any single character** (as Arial Bold renders it) with
+`--letter`; the file is named from the character (`letter-coins-commercial-at.stl`
+here; `M` → `letter-coins-m.stl`, lowercase `m` → `letter-coins-lower-m.stl`):
+
+```sh
+.venv/bin/python generate.py --letter '@'
+.venv/bin/python preview.py --letter '@'   # -> preview-commercial-at.png
+```
+
+Wide or flat glyphs (`W`, `w`, `-`, `_`, ...) are shrunk automatically so they
+keep a 1.5 mm margin from the coin edge; the build prints a note when that
+happens. Characters the font has no glyph for are rejected.
+
 `--output PATH` overrides the filename when a single component is exported.
 Run the geometry self-check (bounding box, single solid, pocket count for each
-component):
+component; add `--letter CHAR` to check that coin too):
 
 ```sh
 .venv/bin/python generate.py --check

@@ -19,6 +19,8 @@ slice in Bambu Studio for the real verification.
 Reuses `build_part` from generate.py. With no flags it renders the first
 component (the `m` coin) to `preview.png`; `--component <name>` renders one
 component to `preview-<name>.png`, and `--all` renders every component.
+`--letter CHAR` renders a coin for any single character to
+`preview-<slug>.png` (e.g. `--letter @` -> `preview-commercial-at.png`).
 `build_part` must stay callable with no arguments (every parameter keeps a
 default), which is also what lets the repo run out of the box.
 """
@@ -39,7 +41,7 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection  # noqa: E402
 
 from build123d import Box, Pos  # noqa: E402
 
-from generate import COMPONENTS, build_part  # noqa: E402
+from generate import COMPONENTS, _validate_letter, build_part, letter_slug  # noqa: E402
 
 DEFAULT_OUTPUT = "preview.png"
 DEFAULT_TOLERANCE_MM = 0.2  # mesh linear deflection; smaller is finer but slower
@@ -161,10 +163,20 @@ def _draw_section(ax, solid, center: np.ndarray, half: np.ndarray) -> None:
 
 
 def render(
-    output: Path, tolerance: float, dpi: int, component: str = COMPONENTS[0]
+    output: Path,
+    tolerance: float,
+    dpi: int,
+    component: str = COMPONENTS[0],
+    letter: str | None = None,
 ) -> None:
-    """Render the 2x2 multi-view contact sheet of `component` to `output`."""
-    solid = build_part(component)
+    """Render the 2x3 multi-view contact sheet of `component` (or of the coin
+    for `letter`) to `output`."""
+    if letter is None:
+        solid = build_part(component)
+        label = component
+    else:
+        solid = build_part(letter=letter)
+        label = f"letter {letter!r} ({letter_slug(letter)})"
     triangles = _triangles(solid, tolerance)
     colors = _face_shading(triangles)
 
@@ -220,7 +232,7 @@ def render(
     # Flat XZ section through y = 0 (position 6): shows pocket depth and roof.
     _draw_section(fig.add_subplot(2, 3, 6), solid, center, half)
 
-    fig.suptitle(f"letter-coins preview — {component}", fontsize=14)
+    fig.suptitle(f"letter-coins preview — {label}", fontsize=14)
     fig.savefig(output, dpi=dpi)
     plt.close(fig)
 
@@ -239,6 +251,13 @@ def _parse_args():
         "--all",
         action="store_true",
         help="render every component, each to its default PNG path.",
+    )
+    p.add_argument(
+        "--letter",
+        default=None,
+        metavar="CHAR",
+        help="render a coin for any single character instead of a component "
+        "(-> preview-<slug>.png, e.g. --letter '@' -> preview-commercial-at.png).",
     )
     p.add_argument(
         "--output",
@@ -267,11 +286,24 @@ def _parse_args():
         metavar="DPI",
         help=f"Output resolution in dots per inch. Default: {DEFAULT_DPI}.",
     )
-    return p.parse_args()
+    args = p.parse_args()
+    if args.letter is not None:
+        try:
+            _validate_letter(args.letter)
+        except ValueError as e:
+            p.error(f"--letter: {e}")
+        if args.all:
+            p.error("--letter renders a single coin; it cannot be combined with --all")
+    return args
 
 
 def main():
     args = _parse_args()
+    if args.letter is not None:
+        output = args.output or Path(f"preview-{letter_slug(args.letter)}.png")
+        render(output, args.tolerance, args.dpi, letter=args.letter)
+        print(f"Wrote preview: {output}")
+        return
     components = COMPONENTS if args.all else (args.component,)
     for component in components:
         output = args.output

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Generate STLs for letter-coins.
 
-Quarter-sized magnetic "claim" tokens (an "M" coin and an "S" coin) plus a
-magnet test strip of graded press-fit pockets. See DESIGN_BRIEF.md.
+Quarter-sized magnetic "claim" tokens (an "M" coin, an "S" coin, or a coin
+for any single character via --letter) plus a magnet test strip of graded
+press-fit pockets. See DESIGN_BRIEF.md.
 
 Coordinate system: right-handed; origin at the center of the footprint, back
 face on the build plate at z = 0.
@@ -25,7 +26,9 @@ CLI. See --help.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
+import unicodedata
 from pathlib import Path
 
 from OCP.BRepAdaptor import BRepAdaptor_Surface
@@ -40,6 +43,7 @@ from build123d import (
     Text,
     export_stl,
     extrude,
+    scale,
 )
 
 # === Part geometry ==========================================================
@@ -54,6 +58,7 @@ POCKET_ROOF_MM = 1.2  # material between pocket ceiling and top face
 COIN_DIAMETER_MM = 24.26  # US quarter
 LETTER_HEIGHT_MM = 14.0  # glyph Y extent
 LETTER_EMBOSS_MM = 1.0  # letter height above the coin top face
+LETTER_MARGIN_MM = 1.5  # min glyph-outline-to-coin-edge gap; glyphs shrink to fit
 TEST_CLEARANCE_START_MM = 0.30  # per-side clearance of the tightest test pocket
 TEST_CLEARANCE_STEP_MM = 0.15  # clearance increment between test pockets
 TEST_POCKET_COUNT = 6  # number of pockets on the test strip
@@ -66,6 +71,12 @@ LETTER_FONT_STYLE = FontStyle.BOLD
 
 # Boolean overshoot so cuts/fuses never resolve a coincident face.
 _FACE_OVERLAP_MM = 0.2
+
+# Points sampled per glyph edge when measuring the outline's max radius.
+_GLYPH_SAMPLES_PER_EDGE = 64
+# A code point guaranteed to have no glyph (a Unicode noncharacter); the font
+# renders it as its .notdef box, which is what a missing glyph looks like.
+_NOTDEF_PROBE = "\uffff"
 
 # Derived quantities (module-level values document the defaults; the builders
 # recompute them from their keyword arguments so CLI flags stay live).
@@ -88,6 +99,38 @@ COIN_LETTERS = {"m": "M", "s": "S"}
 
 def default_output(component: str) -> str:
     return f"{PROJECT}-{component}.stl"
+
+
+def _validate_letter(ch) -> str:
+    """Return `ch` if it is exactly one non-whitespace code point, else raise."""
+    if not isinstance(ch, str) or len(ch) != 1:
+        raise ValueError(
+            f"letter must be exactly one character (one code point), got {ch!r}"
+        )
+    if ch.isspace():
+        raise ValueError(f"letter must not be whitespace, got {ch!r}")
+    return ch
+
+
+def letter_slug(ch: str) -> str:
+    """Filename slug for a coin character (see DESIGN_BRIEF.md section 9).
+
+    `M` -> `m` (matches the preset), `m` -> `lower-m` (no collision on a
+    case-insensitive filesystem), `7` -> `7`, `@` -> `commercial-at`, and an
+    unnamed code point -> `u<hex>`.
+    """
+    _validate_letter(ch)
+    if ch.isascii() and ch.isupper():
+        return ch.lower()
+    if ch.isascii() and ch.islower():
+        return f"lower-{ch}"
+    if ch.isascii() and ch.isdigit():
+        return ch
+    name = unicodedata.name(ch, "")
+    slug = "".join(c if c.isalnum() else "-" for c in name.lower()).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or f"u{ord(ch):04x}"
 
 
 # ----------------------------------------------------------------------------
@@ -168,27 +211,81 @@ def _magnet_pocket(diameter: float, depth: float, x: float = 0.0):
     )
 
 
-def _letter_sketch(letter: str, letter_height: float):
-    """Glyph sketch scaled so its Y extent is `letter_height`, bbox-centered.
+def _text(letter: str, size: float):
+    return Text(
+        letter,
+        font_size=size,
+        font=LETTER_FONT,
+        font_style=LETTER_FONT_STYLE,
+        align=(Align.CENTER, Align.CENTER),
+    )
+
+
+def _is_notdef(glyph, size: float) -> bool:
+    """True if `glyph` is the font's missing-glyph box at this font size."""
+    ref = _text(_NOTDEF_PROBE, size)
+    if len(ref.faces()) != len(glyph.faces()):
+        return False
+    a, b = ref.bounding_box().size, glyph.bounding_box().size
+    return (
+        math.isclose(ref.area, glyph.area, rel_tol=1e-6, abs_tol=1e-9)
+        and math.isclose(a.X, b.X, rel_tol=1e-6)
+        and math.isclose(a.Y, b.Y, rel_tol=1e-6)
+    )
+
+
+def glyph_radius(sketch) -> float:
+    """Max distance from the Z axis over points sampled along every edge.
+
+    Bbox corners overestimate round glyphs (an `@`'s bbox corner is far
+    outside its outline), so sample the actual curves.
+    """
+    params = [i / (_GLYPH_SAMPLES_PER_EDGE - 1) for i in range(_GLYPH_SAMPLES_PER_EDGE)]
+    return max(
+        math.hypot(p.X, p.Y) for e in sketch.edges() for p in e.positions(params)
+    )
+
+
+def _letter_sketch(
+    letter: str,
+    letter_height: float = LETTER_HEIGHT_MM,
+    coin_diameter: float = COIN_DIAMETER_MM,
+    verbose: bool = True,
+):
+    """Glyph sketch, bbox-centered, sized to `letter_height` and fit to the disc.
 
     `font_size` is not cap height, so build once at a probe size, measure the
     glyph's bounding box and rescale linearly (outlines scale with font size).
+    Then, if any point of the outline lies farther than
+    `coin_diameter / 2 - LETTER_MARGIN_MM` from the center (wide or flat
+    glyphs: `@`, `W`, `_`, `-`), shrink the glyph uniformly until it fits.
     """
-
-    def make(size):
-        return Text(
-            letter,
-            font_size=size,
-            font=LETTER_FONT,
-            font_style=LETTER_FONT_STYLE,
-            align=(Align.CENTER, Align.CENTER),
+    _validate_letter(letter)
+    probe = _text(letter, letter_height)
+    if not probe.faces() or probe.area <= 1e-9 or _is_notdef(probe, letter_height):
+        raise ValueError(
+            f"font produced no glyph for {letter!r} "
+            f"({LETTER_FONT} {LETTER_FONT_STYLE.name.lower()} has no outline for "
+            f"U+{ord(letter):04X})"
         )
-
-    probe = make(letter_height)
     probe_h = probe.bounding_box().size.Y
-    glyph = make(letter_height * letter_height / probe_h)
+    if probe_h <= 1e-9:
+        raise ValueError(f"font produced no glyph for {letter!r} (zero height)")
+    glyph = _text(letter, letter_height * letter_height / probe_h)
     c = glyph.bounding_box().center()
-    return Pos(-c.X, -c.Y, 0) * glyph
+    glyph = Pos(-c.X, -c.Y, 0) * glyph
+
+    r_allowed = coin_diameter / 2 - LETTER_MARGIN_MM
+    r_max = glyph_radius(glyph)
+    if r_max > r_allowed:
+        glyph = scale(glyph, by=r_allowed / r_max)
+        if verbose:
+            print(
+                f"glyph {letter!r} shrunk to fit: Y extent {letter_height:.2f} -> "
+                f"{glyph.bounding_box().size.Y:.2f} mm "
+                f"(outline radius {r_max:.2f} > {r_allowed:.2f} mm)"
+            )
+    return glyph
 
 
 def _build_coin(
@@ -199,7 +296,14 @@ def _build_coin(
     letter_emboss: float = LETTER_EMBOSS_MM,
     **kwargs,
 ):
+    """The single coin builder, for any character (presets included).
+
+    All faces of the glyph sketch (islands such as the dot of an `i`, and faces
+    with holes such as the counter of an `@`) are extruded together and fused
+    onto the body, so every island sits on the coin face.
+    """
     d = _derived(letter_emboss=letter_emboss, **kwargs)
+    sketch = _letter_sketch(letter, letter_height, coin_diameter)
     body = Cylinder(
         radius=coin_diameter / 2,
         height=d["body_thickness"],
@@ -207,7 +311,7 @@ def _build_coin(
     )
     body -= _magnet_pocket(d["pocket_diameter"], d["pocket_depth"])
     glyph = extrude(
-        _letter_sketch(letter, letter_height),
+        sketch,
         amount=letter_emboss + _FACE_OVERLAP_MM,
     )
     glyph = Pos(0, 0, d["body_thickness"] - _FACE_OVERLAP_MM) * glyph
@@ -236,12 +340,17 @@ def _build_magnet_test(**kwargs):
 # ----------------------------------------------------------------------------
 
 
-def build_part(component: str = COMPONENTS[0], **params):
+def build_part(component: str = COMPONENTS[0], *, letter: str | None = None, **params):
     """Build one component; with no arguments returns the first (`m`) coin.
 
-    `params` accepts the CLI-exposed parameters by their DESIGN_BRIEF names
-    (magnet_diameter, magnet_clearance, coin_diameter, letter_height, ...).
+    `letter` builds a coin for any single character (overriding `component`,
+    which must then be a coin). `params` accepts the CLI-exposed parameters by
+    their DESIGN_BRIEF names (magnet_diameter, coin_diameter, letter_height, ...).
     """
+    if letter is not None:
+        if component not in COIN_LETTERS:
+            raise ValueError(f"letter= builds a coin; component {component!r} is not")
+        return _build_coin(_validate_letter(letter), **params)
     if component in COIN_LETTERS:
         return _build_coin(COIN_LETTERS[component], **params)
     if component == "magnet-test":
@@ -272,22 +381,38 @@ def _count_pockets(solid, max_radius: float) -> int:
     return len(centers)
 
 
-def _expected(component: str, **params) -> tuple[tuple[float, float, float], int]:
+def _top_glyph_radius(solid, top_z: float) -> float:
+    """Outline radius of the glyph's top faces (those at z = `top_z`)."""
+    tops = [f for f in solid.faces() if abs(f.center().Z - top_z) < 1e-4]
+    return max((glyph_radius(f) for f in tops), default=0.0)
+
+
+def _expected(
+    component: str | None, **params
+) -> tuple[tuple[float, float, float], int]:
     d = _derived(**params)
-    if component in COIN_LETTERS:
+    if component is None or component in COIN_LETTERS:
         dia = params.get("coin_diameter", COIN_DIAMETER_MM)
         return (dia, dia, d["total_height"]), 1
     count = params.get("test_pocket_count", TEST_POCKET_COUNT)
     return (d["test_strip_length"], d["test_strip_width"], d["body_thickness"]), count
 
 
-def check_part(components=COMPONENTS, **params) -> bool:
-    """Build each component and assert bbox, single solid and pocket count."""
+def check_part(components=COMPONENTS, letters=(), **params) -> bool:
+    """Build each component (and each `letters` coin) and assert bbox, single
+    solid, pocket count and, for coins, that the glyph stays inside the margin.
+    """
     xy_tol, z_tol = 0.3, 0.05
     ok = True
     print("geometry self-check:")
-    for comp in components:
-        solid = build_part(comp, **params)
+    targets = [(c, None) for c in components] + [(None, ch) for ch in letters]
+    for comp, ch in targets:
+        if ch is None:
+            solid = build_part(comp, **params)
+            label = comp
+        else:
+            solid = build_part(letter=ch, **params)
+            label = f"letter {ch!r} ({letter_slug(ch)})"
         bbox = solid.bounding_box()
         size = bbox.size
         n_solids = len(solid.solids())
@@ -295,7 +420,7 @@ def check_part(components=COMPONENTS, **params) -> bool:
         max_pocket = max(d["pocket_diameter"], d["test_pocket_diameter_max"])
         n_pockets = _count_pockets(solid, max_pocket / 2)
         (ex, ey, ez), want_pockets = _expected(comp, **params)
-        print(f"  [{comp}]")
+        print(f"  [{label}]")
         print(f"    solids       : {n_solids}")
         print(f"    pockets      : {n_pockets} (expected {want_pockets})")
         print(f"    bounding box : {size.X:.2f} x {size.Y:.2f} x {size.Z:.2f} mm")
@@ -326,6 +451,16 @@ def check_part(components=COMPONENTS, **params) -> bool:
                 problems.append(f"not centered in {axis} (center {(lo + hi) / 2:.3f})")
         if n_pockets != want_pockets:
             problems.append(f"expected {want_pockets} pockets, found {n_pockets}")
+        if comp is None or comp in COIN_LETTERS:
+            r_glyph = _top_glyph_radius(solid, d["total_height"])
+            r_allowed = (
+                params.get("coin_diameter", COIN_DIAMETER_MM) / 2 - LETTER_MARGIN_MM
+            )
+            print(f"    glyph radius : {r_glyph:.2f} mm (max {r_allowed:.2f})")
+            if r_glyph <= 0:
+                problems.append("no glyph top face found")
+            elif r_glyph > r_allowed + 1e-3:
+                problems.append(f"glyph radius {r_glyph:.3f} > {r_allowed:.3f} mm")
         for p in problems:
             print(f"    FAIL: {p}")
         if problems:
@@ -427,6 +562,14 @@ def _parse_args():
         action="store_true",
         help="export every component, each to its own letter-coins-<component>.stl.",
     )
+    p.add_argument(
+        "--letter",
+        default=None,
+        metavar="CHAR",
+        help="build a coin for any single character instead of the m/s preset "
+        "(quote it in the shell, e.g. --letter '@' -> "
+        "letter-coins-commercial-at.stl).",
+    )
     for flag, dest, typ, default, help_text in _CLI_PARAMS:
         p.add_argument(
             flag,
@@ -460,6 +603,15 @@ def _parse_args():
         p.error("every test-strip pocket diameter must be > 0")
     if args.all and args.output is not None:
         p.error("--output applies only when a single component is exported")
+    if args.letter is not None:
+        try:
+            _validate_letter(args.letter)
+        except ValueError as e:
+            p.error(f"--letter: {e}")
+        if args.all:
+            p.error("--letter builds a single coin; it cannot be combined with --all")
+        if args.component not in COIN_LETTERS:
+            p.error(f"--letter builds a coin; drop --component {args.component}")
     return args, params
 
 
@@ -474,9 +626,14 @@ def main():
     args, params = _parse_args()
 
     if args.check:
-        sys.exit(0 if check_part(**params) else 1)
+        letters = (args.letter,) if args.letter is not None else ()
+        sys.exit(0 if check_part(letters=letters, **params) else 1)
 
-    components = COMPONENTS if args.all else (args.component,)
+    if args.letter is not None:
+        targets = [(letter_slug(args.letter), args.letter)]
+    else:
+        components = COMPONENTS if args.all else (args.component,)
+        targets = [(comp, None) for comp in components]
     d = _derived(**params)
 
     print("letter-coins -- resolved parameters:")
@@ -485,12 +642,17 @@ def main():
     for key in ("pocket_diameter", "pocket_depth", "body_thickness", "total_height"):
         print(f"  {key:24s}: {d[key]:.4f} (derived)")
     print(f"  {'font':24s}: {LETTER_FONT} ({LETTER_FONT_STYLE.name.lower()})")
+    if args.letter is not None:
+        print(f"  {'letter':24s}: {args.letter!r} (U+{ord(args.letter):04X})")
     print()
 
-    for comp in components:
+    for comp, ch in targets:
         if comp == "magnet-test":
             _print_pocket_table(params)
-        solid = build_part(comp, **params)
+        if ch is None:
+            solid = build_part(comp, **params)
+        else:
+            solid = build_part(letter=ch, **params)
         out_path = (
             args.output if args.output is not None else Path(default_output(comp))
         )
@@ -501,4 +663,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except ValueError as e:  # e.g. a character the font has no glyph for
+        sys.exit(f"generate.py: error: {e}")

@@ -54,6 +54,35 @@ both the coins and the strip, so the pocket depth/roof are identical.
 5. Result must be one solid. Letter is a component→letter map:
    `{"m": "M", "s": "S"}`.
 
+### Any-character coins (`--letter`) — added after first ship
+
+See DESIGN_BRIEF.md §9 for intent. Implement as a generalization, not a special
+case:
+
+1. `_build_coin(letter, ...)` is the single coin builder. `build_part(component,
+   *, letter=None, ...)`: if `letter` is given, build a coin for it (component
+   is ignored / treated as a coin); otherwise `m`/`s` map through
+   `COIN_LETTERS`. `build_part()` with no args still returns the `M` coin.
+2. `_validate_letter(ch)`: `len(ch) == 1` and `not ch.isspace()`, else
+   `ValueError` with a clear message.
+3. Glyph sizing (extend `_letter_sketch`): build at the measured-bbox scale so
+   Y extent = `letter_height` (existing method). Centre on its bbox. Then
+   compute `r_max` = the max distance from the origin over points sampled along
+   every edge of the glyph (e.g. `edge.positions(...)` / `position_at` at ~64
+   params per edge — bbox corners are too conservative for round glyphs like
+   `@`). If `r_max > coin_diameter/2 - LETTER_MARGIN_MM`, uniformly scale the
+   glyph by `(coin_diameter/2 - LETTER_MARGIN_MM) / r_max` and print a note
+   (`glyph '@' shrunk to fit: Y extent 14.00 -> 12.3 mm`).
+4. Empty-glyph guard: if the sketch has no faces or total area ≈ 0, raise
+   `ValueError(f"font produced no glyph for {ch!r}")`.
+5. Islands/holes: extrude all faces of the sketch together and fuse to the
+   body (same overlap convention). Result must be one solid.
+6. `_letter_slug(ch)` per the brief's filename rule; output is
+   `letter-coins-<slug>.stl`. Preview with `--letter` writes
+   `preview-<slug>.png`.
+7. `--letter` is incompatible with `--component magnet-test` and `--all`
+   (error out); with `--letter`, `--component` is ignored or must be a coin.
+
 ### `magnet-test` strip (`_build_magnet_test()`)
 
 1. Plan-view outline (XY), extruded from z = 0 to `BODY_THICKNESS_MM`: a
@@ -118,18 +147,22 @@ CLI path must honor the flags.
 | `BODY_THICKNESS_MM` | 7.75 | — | derived |
 | `TOTAL_HEIGHT_MM` | 8.75 | — | derived |
 | `TEST_CLEARANCE_MAX_MM` | 1.05 | — | derived |
-| `TEST_POCKET_DIAMETER_MAX_MM` | 6.8625 | — | derived |
-| `TEST_PITCH_MM` | 8.0625 | — | derived |
-| `TEST_STRIP_WIDTH_MM` | 9.2625 | — | derived |
-| `TEST_STRIP_LENGTH_MM` | 49.575 | — | derived |
+| `TEST_POCKET_DIAMETER_MAX_MM` | 8.4625 | — | derived |
+| `TEST_PITCH_MM` | 9.6625 | — | derived |
+| `TEST_STRIP_WIDTH_MM` | 10.8625 | — | derived |
+| `TEST_STRIP_LENGTH_MM` | 59.175 | — | derived |
 | `_FACE_OVERLAP_MM` | 0.2 | — | Boolean overshoot/overlap |
 | `COMPONENTS` | `("m", "s", "magnet-test")` | — | first is default |
-| `COIN_LETTERS` | `{"m": "M", "s": "S"}` | — | component → glyph |
+| `COIN_LETTERS` | `{"m": "M", "s": "S"}` | — | component → glyph (presets) |
+| `LETTER_MARGIN_MM` | 1.5 | — | min glyph-to-edge gap; glyphs shrink to respect it |
 
 ## CLI surface
 
 - `--component {m,s,magnet-test}` — default `m`.
 - `--all` — export every component to its own file.
+- `--letter CHAR` — build a coin for any single character (e.g. `--letter @`
+  → `letter-coins-commercial-at.stl`). Quote it in the shell when needed.
+  `preview.py` gets the same flag.
 - One flag per CLI row above (floats, `--test-pocket-count` int). Help text from
   the `meaning`.
 - `--output PATH` — only honored when a single component is exported. Default
@@ -163,7 +196,7 @@ CLI path must honor the flags.
 3. `--check` passes; bounding boxes at defaults (±0.3 mm in X/Y for the
    letter-free dims; Z exact to ±0.05):
    - `m`, `s`: X 24.26, Y 24.26, Z 8.75.
-   - `magnet-test`: X 49.58, Y 9.26, Z 7.75.
+   - `magnet-test`: X 59.18, Y 10.86, Z 7.75.
    Each is a single solid. Feature check: coins have 1 pocket, strip has
    `TEST_POCKET_COUNT` (e.g. count cylindrical faces whose radius < 3 mm, or
    check volume against expectation).
@@ -175,6 +208,15 @@ CLI path must honor the flags.
    diameter changes (proves the flag is live).
 6. `.venv/bin/black generate.py preview.py` leaves files unchanged.
 7. (Maker) slice in Bambu Studio — no supports; print strip, then coins.
+8. **Any-character sweep.** Build a coin for each of: A–Z, a–z, 0–9, and
+   ``@ # $ % & * ? ! . , : ; - _ + = / \ | ~ ^ ' " ( ) [ ] { } < > ` `` plus a
+   couple of non-ASCII (`é`, `ß`, `€`, `ä`). Each must be a single solid,
+   bbox 24.26 × 24.26 × 8.75 (± tolerance), glyph within
+   `coin_radius - LETTER_MARGIN_MM`. Report any that fail or that the font
+   cannot render. Whitespace and multi-char input must be rejected.
+9. Export and preview the `@` coin via `--letter @`; Read its preview and
+   confirm the @ is upright, readable, fully on the disc, and its inner
+   counter (hole) is present.
 
 Environment: if `.venv` doesn't exist, create it per README
 (`uv venv .venv --python 3.12 && uv pip install -r requirements.txt -r requirements-dev.txt`).

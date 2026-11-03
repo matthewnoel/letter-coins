@@ -162,5 +162,26 @@ authoritative.
 - **Preview is a 2x3 sheet** (isometric, top, bottom look-through, front, right,
   XZ section at y = 0). Blind pockets are invisible from the top, so the bottom
   plan and the section panel are what verify pocket placement and depth.
+- **One coin code path.** `--letter CHAR` and the `m`/`s` presets all go
+  through `_build_coin` → `_letter_sketch`; there is no per-character special
+  case. All faces of the glyph sketch (islands like the dot of `i`, faces with
+  holes like `@`) are extruded together and fused, giving one solid.
+- **Fit-to-disc shrink.** After scaling to `letter_height`, `_letter_sketch`
+  measures the outline's max radius by sampling 64 points along every edge
+  (`glyph_radius`) — bbox corners would wrongly shrink round glyphs like `@` —
+  and uniformly shrinks the glyph if it exceeds
+  `coin_diameter / 2 - LETTER_MARGIN_MM`. At defaults this shrinks
+  `` W m w - _ = ~ ^ " ` ``; M, S and `@` are untouched (@ is 14.04 × 14.0 mm).
+  Flat glyphs are deliberately scaled to Y = `letter_height` first, so `.` is a
+  14 mm dot and `_` ends up a 21 × 3.3 mm bar — per DESIGN_BRIEF §9.
+- **Missing-glyph guard.** Arial has no glyph for e.g. CJK or private-use code
+  points, and OCCT then renders the `.notdef` box instead of failing.
+  `_is_notdef` compares the glyph against the rendering of U+FFFF (a
+  noncharacter) and raises `ValueError("font produced no glyph ...")`.
+- **Slug rule** (`letter_slug`): `M`→`m` (same file as the preset), `m`→`lower-m`
+  (macOS is case-insensitive), digits as-is, else the lowercased Unicode name
+  with non-alphanumerics → `-` (`@`→`commercial-at`), else `u<hex>`.
+- **`check_part` glyph check** reads the radius back from the built solid's top
+  faces (z = total height), independent of the sketch-side shrink logic.
 - **requirements.txt pins `ocpsvg==0.5.0`**: build123d 0.9.1 would otherwise
   pull ocpsvg 0.7, which needs a newer OCP and makes `import build123d` fail.
